@@ -1,13 +1,14 @@
 import { merchantById } from "@/data/merchants"
-import { Payment } from "@/data/types"
+import { Payment, PaymentFilters } from "@/data/types"
 import { formatMoney } from "./money"
 
 /**
  * CSV export for the payments table.
  *
- * The column set is fixed. Ops has asked for control over it — that is
- * NWP-101 — but today everyone gets every column, including the card
- * last four, whether or not the file is going to a merchant.
+ * Ops chooses the columns and the scope (NWP-101). Column names and scope
+ * arrive from the client, so they are checked here against allowlists before
+ * they reach the serializer or a filename. The card last four is left out
+ * unless someone asks for it explicitly.
  */
 
 export const EXPORT_COLUMNS = [
@@ -24,6 +25,71 @@ export const EXPORT_COLUMNS = [
 ] as const
 
 export type ExportColumn = (typeof EXPORT_COLUMNS)[number]
+
+/** What ships when nobody chooses: every column except the card last four. */
+export const DEFAULT_EXPORT_COLUMNS: readonly ExportColumn[] =
+  EXPORT_COLUMNS.filter((column) => column !== "last4")
+
+function isExportColumn(value: string): value is ExportColumn {
+  return (EXPORT_COLUMNS as readonly string[]).includes(value)
+}
+
+export type ParsedColumns =
+  | { ok: true; columns: ExportColumn[] }
+  | { ok: false; error: string }
+
+/**
+ * Turn the `columns` query param into a validated, ordered list.
+ *
+ * A missing param means the default set. An empty selection and any name
+ * outside EXPORT_COLUMNS are rejected rather than ignored, so a bad request
+ * never quietly produces a different file. Duplicates keep their first
+ * position. The error never echoes the client's input.
+ */
+export function parseExportColumns(raw: string | null): ParsedColumns {
+  if (raw === null) return { ok: true, columns: [...DEFAULT_EXPORT_COLUMNS] }
+
+  const requested = raw
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean)
+
+  if (requested.length === 0) {
+    return { ok: false, error: "Choose at least one column to export." }
+  }
+  if (!requested.every(isExportColumn)) {
+    return { ok: false, error: "One or more requested columns are not available for export." }
+  }
+  return { ok: true, columns: [...new Set(requested as ExportColumn[])] }
+}
+
+export const EXPORT_SCOPES = ["filtered", "all"] as const
+export type ExportScope = (typeof EXPORT_SCOPES)[number]
+
+/** A missing scope means the current filter. Anything else unknown is null. */
+export function parseExportScope(raw: string | null): ExportScope | null {
+  if (raw === null) return "filtered"
+  return (EXPORT_SCOPES as readonly string[]).includes(raw)
+    ? (raw as ExportScope)
+    : null
+}
+
+/**
+ * The scope word in the filename. Built only from allowlisted values: the
+ * status comes out of parseFilters, so free text like a search never lands
+ * in a filename.
+ */
+export function exportScopeLabel(
+  scope: ExportScope,
+  filters: PaymentFilters,
+): string {
+  if (scope === "all") return "all"
+  if (filters.status && filters.status !== "all") return filters.status
+  if (filters.merchantId || filters.search || filters.from || filters.to) {
+    return "filtered"
+  }
+  return "all"
+}
 
 function escapeCell(value: string): string {
   if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
@@ -66,6 +132,8 @@ export function toCsv(
   return [header, ...rows].join("\n")
 }
 
-export function exportFilename(date = new Date()): string {
-  return `payments-${date.toISOString().slice(0, 10)}.csv`
+/** UTC date stamp, with the scope label when there is one. */
+export function exportFilename(date = new Date(), scopeLabel?: string): string {
+  const day = date.toISOString().slice(0, 10)
+  return scopeLabel ? `payments-${scopeLabel}-${day}.csv` : `payments-${day}.csv`
 }
