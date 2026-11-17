@@ -8,18 +8,30 @@ Northwind Payments is fictional. Every merchant, cardholder, amount, and card in
 
 ```bash
 npm install
-npm run dev
+npm run dev                                             # http://localhost:3000, redirects to /overview
+npm test                                                # Vitest, node env, src/**/*.test.ts
+npx vitest run src/lib/csv.test.ts -t "exportFilename"  # one file, one test by name
+npm run lint                                            # next lint
+npx tsc --noEmit                                        # type-check (no script for it)
 ```
 
 No database, no seed step, no Docker.
 
 ## Data lives in memory
 
-Seed data is JSON, loaded into a store module at boot. Route handlers read and write that store.
+Seed data is generated deterministically at boot by `src/data/generate.ts` (fixed seed, so everyone gets identical records); merchants are defined in `src/data/merchants.ts`. Both load into the store in `src/data/store.ts`, which route handlers and pages read and write.
 
 - Writes last for the life of the dev server and vanish on restart. That is expected.
 - Persistence is tracked separately as NWP-203. **Do not add a database, an ORM, or migrations.**
-- If you need more seed data, add it to the JSON. Never edit seed data to make a failing case disappear.
+- If you need more seed data, extend the generator or the merchant list. Never edit seed data to make a failing case disappear.
+
+## How requests reach the data
+
+- Pages are async server components that call `src/data/queries.ts` directly; they do not fetch from the API.
+- The route handlers are `GET /api/payments` (JSON, paginated at `PAGE_SIZE` = 20) and `GET /api/payments/export` (CSV).
+- `queries.ts` is the query builder: `parseFilters` (the server-side allowlist for URL input), `filterPayments`, `sortPayments`, `paginate`, and `queryPayments`, which runs all three. Export filters and sorts without paginating, so it covers every matching row.
+- Turn URL input into filters with `parseFilters`. `src/app/payments/page.tsx` builds its filters by hand; do not copy that.
+- Known defect: `sortPayments` compares amounts as strings, so $90.00 sorts above $100.00.
 
 ## Where the rest of the context lives
 
@@ -53,7 +65,7 @@ These four explain most of the code, and breaking them is how bugs get in here.
 | --- | --- |
 | `src/app/` | Console routes: overview, payments, disputes, payouts. Cards is NWP-201 and does not exist yet |
 | `src/app/api/` | Route handlers |
-| `src/data/` | Seed JSON, the in-memory store, and types |
+| `src/data/` | Seed generator, merchants, the in-memory store, the query builder, and types |
 | `src/components/` | Tremor-based primitives and the console's own components |
 | `src/lib/` | Money, date, and CSV helpers, each with a `.test.ts` beside it. Read these before touching an amount |
 
